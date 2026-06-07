@@ -58,6 +58,7 @@ jobs:
             patchelf \
             libnm-dev \
             libdbus-1-dev \
+            libasound2-dev \
             libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev \
             libxss-dev

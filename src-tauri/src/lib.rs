@@ -2,6 +2,7 @@ use std::fs;
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::Mutex;
+#[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::collections::{HashMap, HashSet};
@@ -10,7 +11,6 @@ use chrono::{Local, Timelike};
 use tauri::{
     menu::{Menu, MenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent, TrayIcon},
-    utils::config::Color,
     Manager, WindowEvent, State, Emitter, WebviewWindowBuilder, WebviewUrl, AppHandle, WebviewWindow,
 };
 use tauri_plugin_notification::NotificationExt;
@@ -1254,7 +1254,7 @@ fn ensure_floating_window(app: &AppHandle, visible_on_create: bool) -> Result<We
         return Ok(window);
     }
 
-    WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app,
         "floating-window",
         WebviewUrl::App(PathBuf::from("index.html?mode=floating")),
@@ -1263,14 +1263,17 @@ fn ensure_floating_window(app: &AppHandle, visible_on_create: bool) -> Result<We
     .inner_size(320.0, 104.0)
     .resizable(false)
     .decorations(false)
-    .transparent(true)
-    .background_color(Color(0, 0, 0, 0))
-    .shadow(false)
     .always_on_top(true)
     .skip_taskbar(true)
-    .visible(visible_on_create)
-    .build()
-    .map_err(|e| e.to_string())
+    .visible(visible_on_create);
+
+    #[cfg(target_os = "windows")]
+    let builder = builder
+        .transparent(true)
+        .background_color(tauri::utils::config::Color(0, 0, 0, 0))
+        .shadow(false);
+
+    builder.build().map_err(|e| e.to_string())
 }
 
 fn show_floating_window_now(app: &AppHandle) -> Result<(), String> {
