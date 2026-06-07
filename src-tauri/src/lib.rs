@@ -10,6 +10,7 @@ use chrono::{Local, Timelike};
 use tauri::{
     menu::{Menu, MenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent, TrayIcon},
+    utils::config::Color,
     Manager, WindowEvent, State, Emitter, WebviewWindowBuilder, WebviewUrl, AppHandle, WebviewWindow,
 };
 use tauri_plugin_notification::NotificationExt;
@@ -1225,6 +1226,8 @@ fn ensure_floating_window(app: &AppHandle, visible_on_create: bool) -> Result<We
     .resizable(false)
     .decorations(false)
     .transparent(true)
+    .background_color(Color(0, 0, 0, 0))
+    .shadow(false)
     .always_on_top(true)
     .skip_taskbar(true)
     .visible(visible_on_create)
