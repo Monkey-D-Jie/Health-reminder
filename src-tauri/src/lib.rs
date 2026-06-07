@@ -407,6 +407,7 @@ struct CountdownInfo {
     remaining: u64,  // 剩余秒数
     total: u64,      // 总秒数
     enabled: bool,
+    task_paused: bool,
     snoozed: bool,   // 是否推迟中
     snooze_remaining: u64, // 推迟剩余时间
     snooze_count: u32, // 当前已推迟次数
@@ -594,6 +595,32 @@ fn timer_is_paused() -> bool {
 }
 
 #[tauri::command]
+fn timer_pause_task(task_id: String) {
+    let mut state = get_timer_state().lock().unwrap();
+    let now = Instant::now();
+    if let Some(timer) = state.tasks.get_mut(&task_id) {
+        if timer.config.enabled && timer.disabled_at.is_none() {
+            timer.disabled_at = Some(now);
+        }
+    }
+}
+
+#[tauri::command]
+fn timer_resume_task(task_id: String) {
+    let mut state = get_timer_state().lock().unwrap();
+    let now = Instant::now();
+    if let Some(timer) = state.tasks.get_mut(&task_id) {
+        if timer.config.enabled {
+            if let Some(disabled_at) = timer.disabled_at {
+                let disabled_duration = now.duration_since(disabled_at);
+                timer.reset_time += disabled_duration;
+                timer.disabled_at = None;
+            }
+        }
+    }
+}
+
+#[tauri::command]
 fn timer_reset_task(task_id: String) {
     let mut state = get_timer_state().lock().unwrap();
     let now = Instant::now();
@@ -692,6 +719,7 @@ fn get_countdowns() -> Vec<CountdownInfo> {
             remaining,
             total: total_secs,
             enabled: timer.config.enabled,
+            task_paused: timer.config.enabled && timer.disabled_at.is_some(),
             snoozed: timer.snoozed,
             snooze_remaining,
             snooze_count: timer.snooze_count,
@@ -986,6 +1014,9 @@ fn start_timer_thread(app_handle: AppHandle) {
                         if !timer.config.enabled {
                             continue;
                         }
+                        if timer.disabled_at.is_some() {
+                            continue;
+                        }
 
                         if timer.snoozed {
                             if now >= timer.reset_time {
@@ -1273,6 +1304,39 @@ fn hide_floating_window(app: AppHandle, state: State<FloatingState>) -> Result<(
 }
 
 #[tauri::command]
+fn set_floating_task_menu_open(app: AppHandle, open: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window("floating-window")
+        .ok_or_else(|| "floating window not found".to_string())?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let closed_height = (104.0 * scale).round() as u32;
+    let open_height = (196.0 * scale).round() as u32;
+    let target_height = if open { open_height } else { closed_height };
+    let target_width = (320.0 * scale).round() as u32;
+    let current_size = window.outer_size().map_err(|e| e.to_string())?;
+
+    if current_size.height == target_height {
+        return Ok(());
+    }
+
+    let current_position = window.outer_position().map_err(|e| e.to_string())?;
+    let delta = target_height as i32 - current_size.height as i32;
+    window
+        .set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+            current_position.x,
+            current_position.y - delta,
+        )))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_size(tauri::Size::Physical(tauri::PhysicalSize::new(
+            target_width,
+            target_height,
+        )))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn set_floating_window_always_on_top(app: AppHandle, always_on_top: bool) -> Result<(), String> {
     let window = ensure_floating_window(&app, false)?;
     window.set_always_on_top(always_on_top).map_err(|e| e.to_string())
@@ -1479,6 +1543,7 @@ pub fn run() {
             is_main_window_visible,
             show_floating_window,
             hide_floating_window,
+            set_floating_task_menu_open,
             set_floating_window_always_on_top,
             update_tray_tooltip,
             update_pause_menu,
@@ -1489,6 +1554,8 @@ pub fn run() {
             timer_pause,
             timer_resume,
             timer_is_paused,
+            timer_pause_task,
+            timer_resume_task,
             timer_reset_task,
             timer_reset_all,
             timer_snooze_task,

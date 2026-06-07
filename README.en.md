@@ -24,6 +24,18 @@ In today's fast-paced digital era, a healthy body is the cornerstone of high pro
 
 ## Showcase
 
+### v1.7.0 Floating Window & Daily Reminders
+
+<p align="center">
+  <img src="./docs/screenshots/floating-window-next.png" alt="Floating next reminder" width="45%">
+  <img src="./docs/screenshots/floating-window-menu.png" alt="Floating task menu" width="45%">
+</p>
+
+<p align="center">
+  <img src="./docs/screenshots/floating-window-paused.png" alt="Floating per-task pause" width="45%">
+  <img src="./docs/screenshots/floating-window-themes.png" alt="Floating color themes" width="45%">
+</p>
+
 ### Main Interface (Dashboard) & Custom Task Scheduling (Tasks)
 
 <p align="center">
@@ -172,15 +184,17 @@ npm run tauri build
 > #### Scoop update command
 > scoop update health-reminder
 
-### v1.7.0 (Pending release)
-- **Floating window**: Added a compact always-on-top countdown for the next reminder or a custom target time.
-- **Daily reminders**: Custom tasks support multiple daily `HH:mm` trigger times.
+### v1.7.0 (2026-06-07)
+- **Floating countdown window** ([#12](https://github.com/kaima2022/Health-reminder/issues/12), [#16](https://github.com/kaima2022/Health-reminder/issues/16)): Added a compact always-on-top pill window for the next health reminder or a custom target countdown.
+- **Floating task picker and per-task pause** ([#16](https://github.com/kaima2022/Health-reminder/issues/16)): The chevron opens a task picker, and pause/resume now applies only to the currently displayed task while the default mode still prioritizes the nearest active reminder.
+- **Daily reminders** ([#15](https://github.com/kaima2022/Health-reminder/issues/15)): Custom tasks now support both `interval` and `daily` schedules, with multiple daily `HH:mm` trigger times.
+- **Experience fixes** ([#13](https://github.com/kaima2022/Health-reminder/issues/13), [#14](https://github.com/kaima2022/Health-reminder/issues/14)): Fixed snooze time drift, dark-mode dropdown styling, stale reminder language after switching locale, notification fallback, and the floating open-main-window action.
 
 ### v1.6.2 (Maintenance)
-- **Custom notification sound**: Select a local audio file while keeping the system sound fallback.
-- **Silent auto start**: Boot startup can hide directly to the tray.
-- **Notification diagnostics**: System notification failures now fall back to in-app reminders instead of failing silently.
-- **Release links**: Updater, Scoop manifest, and docs now consistently use `kaima2022/Health-reminder`.
+- **Custom notification sound** ([PR #10](https://github.com/kaima2022/Health-reminder/pull/10)): Select a local audio file while keeping the system sound fallback.
+- **Silent auto start** ([#9](https://github.com/kaima2022/Health-reminder/issues/9)): Boot startup can hide directly to the tray.
+- **Notification diagnostics** ([#13](https://github.com/kaima2022/Health-reminder/issues/13)): System notification failures now fall back to in-app reminders instead of failing silently.
+- **Release links** ([#14](https://github.com/kaima2022/Health-reminder/issues/14)): Updater, Scoop manifest, and docs now consistently use `kaima2022/Health-reminder`.
 
 ### v1.6.1 (2026-02-04)
 - **Dark theme palette**: Improved dark theme colors and contrast for better night use.

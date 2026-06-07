@@ -24,6 +24,18 @@
 
 ##  展示
 
+### v1.7.0 悬浮窗与定点提醒
+
+<p align="center">
+  <img src="./docs/screenshots/floating-window-next.png" alt="悬浮窗下个提醒" width="45%">
+  <img src="./docs/screenshots/floating-window-menu.png" alt="悬浮窗任务菜单" width="45%">
+</p>
+
+<p align="center">
+  <img src="./docs/screenshots/floating-window-paused.png" alt="悬浮窗单任务暂停" width="45%">
+  <img src="./docs/screenshots/floating-window-themes.png" alt="悬浮窗多配色" width="45%">
+</p>
+
 ### 主界面 (Dashboard) & 自定义任务排程 (Tasks)
 
 <p align="center">
@@ -173,15 +185,17 @@ npm run tauri build
 > #### scoop 更新命令
 > scoop update health-reminder
 
-### v1.7.0 (待发布)
-- **悬浮窗**：新增置顶倒计时小窗，可显示下一个提醒或自定义目标时间。
-- **定点提醒**：自定义任务支持每天多个 `HH:mm` 时间点。
+### v1.7.0 (2026-06-07)
+- **悬浮窗倒计时**（[#12](https://github.com/kaima2022/Health-reminder/issues/12)、[#16](https://github.com/kaima2022/Health-reminder/issues/16)）：新增置顶椭圆形悬浮窗，可显示下一个健康提醒或自定义目标倒计时。
+- **悬浮窗任务选择与单任务暂停**（[#16](https://github.com/kaima2022/Health-reminder/issues/16)）：下拉图标可展开任务列表，支持切换当前显示任务；暂停/恢复只作用于当前任务，默认模式仍优先显示最近可触发任务。
+- **定点提醒**（[#15](https://github.com/kaima2022/Health-reminder/issues/15)）：自定义任务支持 `interval` 与 `daily` 两种调度，daily 可配置多个 `HH:mm` 时间点。
+- **体验修复**（[#13](https://github.com/kaima2022/Health-reminder/issues/13)、[#14](https://github.com/kaima2022/Health-reminder/issues/14)）：修复推迟计时少一分钟、暗夜模式下拉栏、语言切换后提醒文案、通知兜底和悬浮窗主窗口按钮等遗留问题。
 
 ### v1.6.2 (维护版)
-- **自定义提示音**：支持选择本地音频作为提醒音，并保留默认系统提示音兜底。
-- **静默自启**：开机自启可直接隐藏到托盘，减少启动打扰。
-- **通知诊断**：系统通知失败时不再静默失败，会回退到应用内提醒。
-- **发布链路**：统一更新器、Scoop manifest 与文档链接到 `kaima2022/Health-reminder`。
+- **自定义提示音**（[PR #10](https://github.com/kaima2022/Health-reminder/pull/10)）：支持选择本地音频作为提醒音，并保留默认系统提示音兜底。
+- **静默自启**（[#9](https://github.com/kaima2022/Health-reminder/issues/9)）：开机自启可直接隐藏到托盘，减少启动打扰。
+- **通知诊断**（[#13](https://github.com/kaima2022/Health-reminder/issues/13)）：系统通知失败时不再静默失败，会回退到应用内提醒。
+- **发布链路**（[#14](https://github.com/kaima2022/Health-reminder/issues/14)）：统一更新器、Scoop manifest 与文档链接到 `kaima2022/Health-reminder`。
 
 ### v1.6.1 (2026-02-04)
 - **暗夜配色**：优化暗色主题配色与对比度，夜间使用更舒适。

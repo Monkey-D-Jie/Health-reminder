@@ -31,15 +31,16 @@ This document lists all the locations where the application version number needs
 |-----------|----------|-------------|
 | `README.md` | Badge URL (`shields.io`)<br>`## 版本记录` (Changelog) | Chinese README version badge and history. |
 | `README.en.md` | Badge URL (`shields.io`)<br>`## Version History` (Changelog) | English README version badge and history. |
+| `docs/screenshots/` | Feature screenshots used by README files | Add or refresh screenshots for user-facing changes. |
 
 ## Update Checklist
 
 1. [ ] Update `package.json`.
 2. [ ] Update `src-tauri/tauri.conf.json`.
 3. [ ] Update `src-tauri/Cargo.toml`.
-4. [ ] Update `bucket/health-reminder.json`.
+4. [ ] Update `bucket/health-reminder.json` (use `hash: "skip"` only before the release asset exists; the release workflow replaces it with the real SHA256).
 5. [ ] Update localization files (`src/i18n/*.js`).
-6. [ ] Update `README.md` and `README.en.md` (Badge & Changelog).
+6. [ ] Update `README.md` and `README.en.md` (Badge, screenshots & Changelog).
 7. [ ] Run `npm install` to update `package-lock.json`.
 8. [ ] Run `cd src-tauri && cargo check` to update `Cargo.lock`.
 9. [ ] Run `npm run build` to verify the build.

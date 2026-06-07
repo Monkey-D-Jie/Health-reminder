@@ -68,6 +68,7 @@ let stats = {
   waterCups: 0,
   workMinutes: 0,
 };
+let taskPausedStatus = {};
 let isPaused = false;
 let isIdle = false;  // 当前是否处于空闲状态
 let workStartTime = Date.now();
@@ -95,6 +96,7 @@ let mainWindowVisibleBeforeLock = true;
 let floatingWindowVisibleBeforeLock = false;
 let floatingCountdownNotified = false;
 let isLockSlaveWindow = false;
+let floatingTaskMenuOpen = false;
 
 let domCache = null;
 let isUiSuspended = false;
@@ -189,7 +191,7 @@ function getNextTaskInfo() {
   let minTime = Infinity;
   settings.tasks.forEach(task => {
     const remaining = countdowns[task.id];
-    if (task.enabled && remaining !== undefined && remaining < minTime) {
+    if (task.enabled && !taskPausedStatus[task.id] && remaining !== undefined && remaining < minTime) {
       minTime = remaining;
       nextTask = task;
     }
@@ -209,17 +211,53 @@ function getFloatingReminderInfo() {
   return getNextTaskInfo();
 }
 
-function getFloatingTaskCycleIds() {
-  return ['', ...settings.tasks.map(task => task.id)];
+function getFloatingTaskOptions() {
+  const sortedTasks = [...settings.tasks].sort((a, b) => {
+    const aRank = !a.enabled ? 2 : taskPausedStatus[a.id] ? 1 : 0;
+    const bRank = !b.enabled ? 2 : taskPausedStatus[b.id] ? 1 : 0;
+    if (aRank !== bRank) return aRank - bRank;
+    const aRemaining = countdowns[a.id] ?? Number.POSITIVE_INFINITY;
+    const bRemaining = countdowns[b.id] ?? Number.POSITIVE_INFINITY;
+    return aRemaining - bRemaining;
+  });
+
+  return [
+    { id: '', label: t('floating.nextReminder') },
+    ...sortedTasks.map(task => {
+      const remaining = countdowns[task.id];
+      const state = taskPausedStatus[task.id]
+        ? ` (${t('status.paused')})`
+        : !task.enabled
+          ? ` (${t('status.disabled')})`
+          : '';
+      const time = remaining === undefined ? '' : ` ${formatDuration(remaining)}`;
+      return { id: task.id, label: `${getTaskDisplayTitle(task)}${time}${state}` };
+    })
+  ];
 }
 
-async function cycleFloatingTask() {
-  const ids = getFloatingTaskCycleIds();
-  const currentIndex = ids.indexOf(settings.floatingSelectedTaskId || '');
-  const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % ids.length : 0;
-  settings.floatingSelectedTaskId = ids[nextIndex];
+async function selectFloatingTask(taskId) {
+  settings.floatingSelectedTaskId = taskId;
+  floatingTaskMenuOpen = false;
   await saveSettings();
   updateFloatingUI();
+  await invoke('set_floating_task_menu_open', { open: false }).catch(console.error);
+}
+
+async function setFloatingTaskMenuOpen(open) {
+  floatingTaskMenuOpen = open;
+  if (open) {
+    await invoke('set_floating_task_menu_open', { open: true }).catch(console.error);
+    updateFloatingUI();
+  } else {
+    updateFloatingUI();
+    await invoke('set_floating_task_menu_open', { open: false }).catch(console.error);
+  }
+}
+
+async function closeFloatingTaskMenu() {
+  if (!floatingTaskMenuOpen) return;
+  await setFloatingTaskMenuOpen(false);
 }
 
 function formatDuration(seconds) {
@@ -414,6 +452,17 @@ async function init() {
 
       watchPauseState();
 
+      document.addEventListener('pointerdown', (event) => {
+        if (!floatingTaskMenuOpen) return;
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        if (target.closest('#floatingTaskMenu') || target.closest('#floatingTaskCycleBtn')) return;
+        closeFloatingTaskMenu().catch(console.error);
+      });
+      window.addEventListener('blur', () => {
+        closeFloatingTaskMenu().catch(console.error);
+      });
+
       listen('countdown-update', (event) => {
         event.payload.forEach(info => {
           countdowns[info.id] = info.remaining;
@@ -423,6 +472,7 @@ async function init() {
             remaining: info.snooze_remaining,
             count: info.snooze_count
           };
+          taskPausedStatus[info.id] = !!info.task_paused;
         });
         updateFloatingUI();
       }).catch(console.error);
@@ -551,12 +601,13 @@ async function init() {
         remaining: info.snooze_remaining,
         count: info.snooze_count
       };
+      taskPausedStatus[info.id] = !!info.task_paused;
       
       // 预提醒逻辑
       const task = settings.tasks.find(t => t.id === info.id);
       const preNotifyTime = (task && task.preNotificationSeconds !== undefined) ? task.preNotificationSeconds : 5;
       
-      if (info.enabled && !isIdle && !isPaused && preNotifyTime > 0 && info.remaining === preNotifyTime) {
+      if (info.enabled && !info.task_paused && !isIdle && !isPaused && preNotifyTime > 0 && info.remaining === preNotifyTime) {
         if (task) {
            if (settings.soundEnabled) {
              playReminderSound();
@@ -1751,8 +1802,36 @@ function getFloatingStatusText(task) {
   if (isPaused) return t('status.paused');
   if (isIdle) return t('status.idle');
   if (task && !task.enabled) return t('status.disabled');
+  if (task && taskPausedStatus[task.id]) return t('status.paused');
   if (task && snoozedStatus[task.id]?.active) return t('status.snoozed');
   return t('floating.nextReminder');
+}
+
+function getFloatingMetaText(task) {
+  const status = getFloatingStatusText(task);
+  const selectedTaskId = settings.floatingSelectedTaskId || '';
+  if (!selectedTaskId || !task) return status;
+
+  const next = getNextTaskInfo();
+  if (next.task && next.task.id !== task.id) {
+    return `${status} · ${t('floating.nearest')}: ${getTaskDisplayTitle(next.task)} ${formatDuration(next.remaining)}`;
+  }
+  return status;
+}
+
+async function toggleFloatingTaskPause() {
+  if (settings.floatingWindowMode === 'customCountdown') return;
+  const { task } = getFloatingReminderInfo();
+  if (!task || !task.enabled) return;
+
+  if (taskPausedStatus[task.id]) {
+    await invoke('timer_resume_task', { taskId: task.id });
+    taskPausedStatus[task.id] = false;
+  } else {
+    await invoke('timer_pause_task', { taskId: task.id });
+    taskPausedStatus[task.id] = true;
+  }
+  updateFloatingUI();
 }
 
 function renderFloatingUI() {
@@ -1768,8 +1847,15 @@ function renderFloatingUI() {
         </div>
         <div class="floating-meta" data-tauri-drag-region>${t('status.loading')}</div>
       </div>
+      <div class="floating-task-menu" id="floatingTaskMenu">
+        ${getFloatingTaskOptions().map(option => `
+          <button type="button" class="floating-task-menu-item ${(settings.floatingSelectedTaskId || '') === option.id ? 'active' : ''}" data-task-id="${option.id}">
+            ${option.label}
+          </button>
+        `).join('')}
+      </div>
       <div class="floating-actions">
-        <button class="floating-action" id="floatingPauseBtn" title="${isPaused ? t('buttons.resume') : t('buttons.pause')}">${isPaused ? ICONS.play : ICONS.pause}</button>
+        <button class="floating-action" id="floatingPauseBtn" title="${t('buttons.pause')}">${ICONS.pause}</button>
         <button class="floating-action" id="floatingResetBtn" title="${t('floating.resetTimer')}">${ICONS.reset}</button>
         <button class="floating-action" id="floatingOpenBtn" title="${t('floating.openMain')}">O</button>
         <button class="floating-action" id="floatingHideBtn" title="${t('floating.hide')}">X</button>
@@ -1788,25 +1874,31 @@ function bindFloatingEvents() {
 
   const openBtn = document.getElementById('floatingOpenBtn');
   if (openBtn) {
-    openBtn.addEventListener('click', () => invoke('show_main_window').catch(console.error));
+    openBtn.addEventListener('click', async () => {
+      await closeFloatingTaskMenu();
+      invoke('show_main_window').catch(console.error);
+    });
   }
 
   const hideBtn = document.getElementById('floatingHideBtn');
   if (hideBtn) {
-    hideBtn.addEventListener('click', () => invoke('hide_floating_window').catch(console.error));
+    hideBtn.addEventListener('click', async () => {
+      await setFloatingTaskMenuOpen(false);
+      invoke('hide_floating_window').catch(console.error);
+    });
   }
 
   const pauseBtn = document.getElementById('floatingPauseBtn');
   if (pauseBtn) {
     pauseBtn.addEventListener('click', () => {
-      togglePause();
-      updateFloatingUI();
+      toggleFloatingTaskPause().catch(console.error);
     });
   }
 
   const resetBtn = document.getElementById('floatingResetBtn');
   if (resetBtn) {
-    resetBtn.addEventListener('click', () => {
+    resetBtn.addEventListener('click', async () => {
+      await closeFloatingTaskMenu();
       const { task } = getFloatingReminderInfo();
       if (!task) return;
       resetTask(task.id);
@@ -1816,10 +1908,18 @@ function bindFloatingEvents() {
 
   const taskCycleBtn = document.getElementById('floatingTaskCycleBtn');
   if (taskCycleBtn) {
-    taskCycleBtn.addEventListener('click', () => {
-      cycleFloatingTask().catch(console.error);
+    taskCycleBtn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      await setFloatingTaskMenuOpen(!floatingTaskMenuOpen);
     });
   }
+
+  document.querySelectorAll('.floating-task-menu-item').forEach(item => {
+    item.addEventListener('click', (event) => {
+      event.stopPropagation();
+      selectFloatingTask(item.dataset.taskId || '').catch(console.error);
+    });
+  });
 }
 
 function updateFloatingUI() {
@@ -1830,16 +1930,22 @@ function updateFloatingUI() {
   const metaEl = document.querySelector('.floating-meta');
   const pauseBtn = document.getElementById('floatingPauseBtn');
   const taskCycleBtn = document.getElementById('floatingTaskCycleBtn');
+  const taskMenu = document.getElementById('floatingTaskMenu');
   if (!titleEl || !timeEl || !metaEl) return;
-
-  if (pauseBtn) {
-    pauseBtn.innerHTML = isPaused ? ICONS.play : ICONS.pause;
-    pauseBtn.title = isPaused ? t('buttons.resume') : t('buttons.pause');
-  }
 
   if (settings.floatingWindowMode === 'customCountdown') {
     titleEl.style.display = '';
     if (taskCycleBtn) taskCycleBtn.style.display = 'none';
+    if (pauseBtn) {
+      pauseBtn.innerHTML = ICONS.pause;
+      pauseBtn.title = t('buttons.pause');
+      pauseBtn.disabled = true;
+    }
+    if (floatingTaskMenuOpen) {
+      floatingTaskMenuOpen = false;
+      invoke('set_floating_task_menu_open', { open: false }).catch(console.error);
+    }
+    if (taskMenu) taskMenu.classList.remove('open');
     const remaining = getCustomCountdownRemaining();
     const title = settings.floatingCountdownTitle || t('floating.customTitle');
     titleEl.textContent = title;
@@ -1855,11 +1961,24 @@ function updateFloatingUI() {
   }
 
   titleEl.style.display = '';
-  if (taskCycleBtn) taskCycleBtn.style.display = '';
+  if (taskCycleBtn) {
+    taskCycleBtn.style.display = '';
+    taskCycleBtn.classList.toggle('active', floatingTaskMenuOpen);
+    taskCycleBtn.setAttribute('aria-expanded', String(floatingTaskMenuOpen));
+  }
+  if (taskMenu) {
+    taskMenu.classList.toggle('open', floatingTaskMenuOpen);
+  }
   const { task, remaining } = getFloatingReminderInfo();
+  if (pauseBtn) {
+    const taskPaused = !!(task && taskPausedStatus[task.id]);
+    pauseBtn.innerHTML = taskPaused ? ICONS.play : ICONS.pause;
+    pauseBtn.title = taskPaused ? t('buttons.resume') : t('buttons.pause');
+    pauseBtn.disabled = !task || !task.enabled;
+  }
   titleEl.textContent = task ? getTaskDisplayTitle(task) : t('status.noActiveTask');
   timeEl.textContent = task ? formatDuration(remaining) : '--:--';
-  metaEl.textContent = getFloatingStatusText(task);
+  metaEl.textContent = getFloatingMetaText(task);
 }
 
 function bindEvents() {
