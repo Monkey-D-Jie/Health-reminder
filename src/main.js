@@ -315,14 +315,41 @@ function renderCurrentSurface() {
   }
 }
 
-function applyPauseState(paused, options = {}) {
+function applyCountdownInfo(info) {
+  countdowns[info.id] = info.remaining;
+  countdownTotals[info.id] = info.total;
+  snoozedStatus[info.id] = {
+    active: info.snoozed,
+    remaining: info.snooze_remaining,
+    count: info.snooze_count
+  };
+  taskPausedStatus[info.id] = !!info.task_paused;
+}
+
+function applyCountdownUpdates(updates) {
+  if (!Array.isArray(updates)) return;
+  updates.forEach(applyCountdownInfo);
+}
+
+async function refreshCountdownsFromBackend(options = {}) {
+  const { render = true } = options;
+  const updates = await invoke('get_countdowns');
+  applyCountdownUpdates(updates);
+  updateTrayTooltip(true);
+  if (render) {
+    renderCurrentSurface();
+  }
+}
+
+async function applyPauseState(paused, options = {}) {
   const { broadcast = true, render = true } = options;
   isPaused = paused;
   if (isPaused) {
-    invoke('timer_pause').catch(console.error);
+    await invoke('timer_pause').catch(console.error);
   } else {
-    invoke('timer_resume').catch(console.error);
+    await invoke('timer_resume').catch(console.error);
   }
+  await refreshCountdownsFromBackend({ render: false }).catch(console.error);
   invoke('update_pause_menu', { paused: isPaused }).catch(() => {});
   if (broadcast) {
     emit('pause-state-updated', { paused: isPaused }).catch(() => {});
@@ -333,16 +360,17 @@ function applyPauseState(paused, options = {}) {
   }
 }
 
-function handlePauseStateUpdated(paused) {
+async function handlePauseStateUpdated(paused) {
   if (isPaused === paused) return;
   isPaused = paused;
+  await refreshCountdownsFromBackend({ render: false }).catch(console.error);
   updateTrayTooltip(true);
   renderCurrentSurface();
 }
 
 function watchPauseState() {
   listen('pause-state-updated', (event) => {
-    handlePauseStateUpdated(!!event.payload?.paused);
+    handlePauseStateUpdated(!!event.payload?.paused).catch(console.error);
   }).catch(console.error);
 }
 
@@ -475,16 +503,7 @@ async function init() {
       });
 
       listen('countdown-update', (event) => {
-        event.payload.forEach(info => {
-          countdowns[info.id] = info.remaining;
-          countdownTotals[info.id] = info.total;
-          snoozedStatus[info.id] = {
-            active: info.snoozed,
-            remaining: info.snooze_remaining,
-            count: info.snooze_count
-          };
-          taskPausedStatus[info.id] = !!info.task_paused;
-        });
+        applyCountdownUpdates(event.payload);
         updateFloatingUI();
       }).catch(console.error);
 
@@ -605,14 +624,7 @@ async function init() {
   await listen('countdown-update', (event) => {
     const updates = event.payload;
     updates.forEach(info => {
-      countdowns[info.id] = info.remaining;
-      countdownTotals[info.id] = info.total;
-      snoozedStatus[info.id] = { 
-        active: info.snoozed, 
-        remaining: info.snooze_remaining,
-        count: info.snooze_count
-      };
-      taskPausedStatus[info.id] = !!info.task_paused;
+      applyCountdownInfo(info);
       
       // 预提醒逻辑
       const task = settings.tasks.find(t => t.id === info.id);
@@ -668,11 +680,11 @@ async function init() {
   });
 
   await listen('reset-all-tasks', () => {
-    resetAll();
+    resetAll().catch(console.error);
   });
 
   await listen('toggle-pause', () => {
-    togglePause();
+    togglePause().catch(console.error);
   });
 
   watchPauseState();
@@ -1131,7 +1143,9 @@ function resetTask(id) {
       snoozedStatus[id].remaining = 0;
     }
     // 通知后端重置该任务
-    invoke('timer_reset_task', { taskId: id }).catch(console.error);
+    invoke('timer_reset_task', { taskId: id })
+      .then(() => refreshCountdownsFromBackend({ render: false }))
+      .catch(console.error);
     updateTrayTooltip(true);
     updateLiveValues();
   }
@@ -1150,13 +1164,13 @@ function updateTask(id, updates) {
   }
 }
 
-function togglePause() {
-  applyPauseState(!isPaused);
+async function togglePause() {
+  await applyPauseState(!isPaused);
 }
 
-function resetAll() {
+async function resetAll() {
   // 通知后端重置所有任务
-  invoke('timer_reset_all').catch(console.error);
+  await invoke('timer_reset_all').catch(console.error);
   settings.tasks.forEach(task => {
     if (!isDailyTask(task)) {
       countdowns[task.id] = task.interval * 60;
@@ -1166,7 +1180,7 @@ function resetAll() {
       snoozedStatus[task.id].remaining = 0;
     }
   });
-  applyPauseState(false, { render: false });
+  await applyPauseState(false, { render: false });
   updateTrayTooltip(true);
   renderFullUI();
 }
@@ -1842,6 +1856,7 @@ async function toggleFloatingTaskPause() {
     await invoke('timer_pause_task', { taskId: task.id });
     taskPausedStatus[task.id] = true;
   }
+  await refreshCountdownsFromBackend({ render: false }).catch(console.error);
   updateFloatingUI();
 }
 

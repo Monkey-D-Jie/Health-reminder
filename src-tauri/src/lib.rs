@@ -1,17 +1,18 @@
+use chrono::{Local, Timelike};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::BufReader;
 use std::path::PathBuf;
-use std::sync::Mutex;
 #[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 use std::thread;
-use chrono::{Local, Timelike};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{
     menu::{Menu, MenuItem, Submenu},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent, TrayIcon},
-    Manager, WindowEvent, State, Emitter, WebviewWindowBuilder, WebviewUrl, AppHandle, WebviewWindow,
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
 };
 use tauri_plugin_notification::NotificationExt;
 use url::form_urlencoded;
@@ -46,8 +47,8 @@ fn get_idle_seconds() -> u64 {
 
 #[cfg(target_os = "windows")]
 fn get_idle_seconds_windows() -> u64 {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
     use windows::Win32::System::SystemInformation::GetTickCount;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 
     unsafe {
         let mut lii = LASTINPUTINFO {
@@ -70,9 +71,7 @@ fn get_idle_seconds_macos() -> u64 {
     use std::process::Command;
 
     // 使用 ioreg 命令获取空闲时间（更可靠的方式）
-    let output = Command::new("ioreg")
-        .args(["-c", "IOHIDSystem"])
-        .output();
+    let output = Command::new("ioreg").args(["-c", "IOHIDSystem"]).output();
 
     if let Ok(output) = output {
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -93,9 +92,9 @@ fn get_idle_seconds_macos() -> u64 {
 
 #[cfg(target_os = "linux")]
 fn get_idle_seconds_linux() -> u64 {
-    use x11::xlib::{XOpenDisplay, XCloseDisplay, XDefaultRootWindow};
-    use x11::xss::{XScreenSaverQueryInfo, XScreenSaverAllocInfo};
     use std::ptr;
+    use x11::xlib::{XCloseDisplay, XDefaultRootWindow, XOpenDisplay};
+    use x11::xss::{XScreenSaverAllocInfo, XScreenSaverQueryInfo};
 
     unsafe {
         let display = XOpenDisplay(ptr::null());
@@ -112,11 +111,7 @@ fn get_idle_seconds_linux() -> u64 {
         let root = XDefaultRootWindow(display);
         let result = XScreenSaverQueryInfo(display, root, info);
 
-        let idle_ms = if result != 0 {
-            (*info).idle
-        } else {
-            0
-        };
+        let idle_ms = if result != 0 { (*info).idle } else { 0 };
 
         x11::xlib::XFree(info as *mut _);
         XCloseDisplay(display);
@@ -172,7 +167,11 @@ fn get_tray_text(key: &str, lang: &str) -> &'static str {
 }
 
 // 获取任务显示标题（默认任务使用翻译，自定义任务使用原标题）
-fn get_task_display_title<'a>(task_id: &str, original_title: &'a str, lang: &str) -> std::borrow::Cow<'a, str> {
+fn get_task_display_title<'a>(
+    task_id: &str,
+    original_title: &'a str,
+    lang: &str,
+) -> std::borrow::Cow<'a, str> {
     match task_id {
         "sit" => std::borrow::Cow::Borrowed(get_tray_text("task_sit", lang)),
         "water" => std::borrow::Cow::Borrowed(get_tray_text("task_water", lang)),
@@ -192,11 +191,11 @@ pub struct TaskConfig {
     pub id: String,
     pub title: String,
     pub desc: String,
-    pub interval: u64,  // 分钟
+    pub interval: u64, // 分钟
     pub enabled: bool,
     pub icon: String,
     #[serde(default)]
-    pub auto_reset_on_idle: bool,  // 空闲时自动重置
+    pub auto_reset_on_idle: bool, // 空闲时自动重置
     #[serde(default = "default_schedule_type")]
     pub schedule_type: String,
     #[serde(default)]
@@ -207,11 +206,13 @@ pub struct TaskConfig {
 struct TaskTimer {
     config: TaskConfig,
     reset_time: Instant,
-    triggered: bool,  // 本轮是否已触发
-    disabled_at: Option<Instant>,  // 禁用时的时间点，用于计算暂停时长
-    snoozed: bool, // 是否处于推迟状态
-    snooze_count: u32, // 当前已推迟次数
+    triggered: bool,              // 本轮是否已触发
+    disabled_at: Option<Instant>, // 禁用时的时间点，用于计算暂停时长
+    snoozed: bool,                // 是否处于推迟状态
+    snooze_count: u32,            // 当前已推迟次数
     daily_last_trigger_key: Option<String>,
+    frozen_remaining: Option<u64>,
+    frozen_total: Option<u64>,
 }
 
 struct TimerState {
@@ -221,12 +222,12 @@ struct TimerState {
     pause_start: Option<Instant>,
     system_locked: bool,
     lock_screen_active: bool,
-    lock_screen_start: Option<Instant>,  // 锁屏开始时间，用于补偿
+    lock_screen_start: Option<Instant>, // 锁屏开始时间，用于补偿
     // 空闲检测相关
-    idle_threshold_seconds: u64,  // 空闲阈值（秒），默认 300 秒 = 5 分钟
-    is_idle: bool,  // 当前是否处于空闲状态
-    idle_start: Option<Instant>,  // 进入空闲状态的时间点
-    idle_start_timestamp: Option<i64>,  // Unix 时间戳（毫秒）
+    idle_threshold_seconds: u64, // 空闲阈值（秒），默认 300 秒 = 5 分钟
+    is_idle: bool,               // 当前是否处于空闲状态
+    idle_start: Option<Instant>, // 进入空闲状态的时间点
+    idle_start_timestamp: Option<i64>, // Unix 时间戳（毫秒）
 }
 
 impl TimerState {
@@ -239,7 +240,7 @@ impl TimerState {
             system_locked: false,
             lock_screen_active: false,
             lock_screen_start: None,
-            idle_threshold_seconds: 300,  // 默认 5 分钟
+            idle_threshold_seconds: 300, // 默认 5 分钟
             is_idle: false,
             idle_start: None,
             idle_start_timestamp: None,
@@ -277,7 +278,12 @@ fn current_daily_trigger_key(task: &TaskConfig) -> Option<String> {
     for value in &task.daily_times {
         if let Some((hour, minute)) = parse_daily_time(value) {
             if now.hour() == hour && now.minute() == minute {
-                return Some(format!("{}:{:02}:{:02}", now.format("%Y-%m-%d"), hour, minute));
+                return Some(format!(
+                    "{}:{:02}:{:02}",
+                    now.format("%Y-%m-%d"),
+                    hour,
+                    minute
+                ));
             }
         }
     }
@@ -304,19 +310,143 @@ fn daily_remaining_seconds(task: &TaskConfig) -> u64 {
     best.unwrap_or(task.interval.saturating_mul(60) as u32) as u64
 }
 
-fn freeze_daily_timer(timer: &mut TaskTimer, now: Instant) {
-    if timer.config.enabled
-        && timer.disabled_at.is_none()
-        && !timer.snoozed
-        && is_daily_task(&timer.config)
-    {
+fn calculate_timer_countdown(
+    timer: &TaskTimer,
+    effective_now: Instant,
+    live_daily: bool,
+) -> (u64, u64, u64) {
+    let is_daily = is_daily_task(&timer.config);
+    let mut total_secs = if is_daily {
+        24 * 60 * 60
+    } else {
+        timer.config.interval * 60
+    };
+
+    let remaining = if timer.snoozed {
+        total_secs = timer
+            .reset_time
+            .checked_duration_since(effective_now)
+            .map(|duration| duration.as_secs().max(1))
+            .unwrap_or(1);
+        timer
+            .reset_time
+            .checked_duration_since(effective_now)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0)
+    } else if is_daily {
+        if live_daily {
+            daily_remaining_seconds(&timer.config)
+        } else {
+            timer
+                .reset_time
+                .checked_duration_since(effective_now)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0)
+        }
+    } else if timer.reset_time > effective_now {
+        let wait_time = timer.reset_time.duration_since(effective_now).as_secs();
+        total_secs + wait_time
+    } else {
+        let elapsed = effective_now
+            .saturating_duration_since(timer.reset_time)
+            .as_secs();
+        if elapsed >= total_secs {
+            0
+        } else {
+            total_secs - elapsed
+        }
+    };
+
+    let snooze_remaining = if timer.reset_time > effective_now {
+        timer.reset_time.duration_since(effective_now).as_secs()
+    } else {
+        0
+    };
+
+    (remaining, total_secs, snooze_remaining)
+}
+
+fn freeze_timer_countdown(timer: &mut TaskTimer, now: Instant) {
+    if !timer.config.enabled {
+        return;
+    }
+
+    if timer.disabled_at.is_none() && !timer.snoozed && is_daily_task(&timer.config) {
         timer.reset_time = now + Duration::from_secs(daily_remaining_seconds(&timer.config));
+    }
+
+    let effective_now = timer.disabled_at.unwrap_or(now);
+    let (remaining, total, _) = calculate_timer_countdown(timer, effective_now, false);
+    timer.frozen_remaining = Some(remaining);
+    timer.frozen_total = Some(total);
+}
+
+fn clear_timer_freeze(timer: &mut TaskTimer) {
+    timer.frozen_remaining = None;
+    timer.frozen_total = None;
+}
+
+fn freeze_active_timers(state: &mut TimerState, now: Instant) {
+    for timer in state.tasks.values_mut() {
+        freeze_timer_countdown(timer, now);
     }
 }
 
-fn freeze_active_daily_timers(state: &mut TimerState, now: Instant) {
-    for timer in state.tasks.values_mut() {
-        freeze_daily_timer(timer, now);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn interval_timer(interval: u64, reset_time: Instant) -> TaskTimer {
+        TaskTimer {
+            config: TaskConfig {
+                id: "sit".to_string(),
+                title: "Stand Up".to_string(),
+                desc: String::new(),
+                interval,
+                enabled: true,
+                icon: "clock".to_string(),
+                auto_reset_on_idle: true,
+                schedule_type: "interval".to_string(),
+                daily_times: Vec::new(),
+            },
+            reset_time,
+            triggered: false,
+            disabled_at: None,
+            snoozed: false,
+            snooze_count: 0,
+            daily_last_trigger_key: None,
+            frozen_remaining: None,
+            frozen_total: None,
+        }
+    }
+
+    #[test]
+    fn frozen_interval_remaining_does_not_drift() {
+        let now = Instant::now();
+        let mut timer = interval_timer(45, now - Duration::from_secs(60));
+
+        freeze_timer_countdown(&mut timer, now);
+        timer.disabled_at = Some(now);
+
+        let frozen_remaining = timer.frozen_remaining.unwrap();
+        let later = now + Duration::from_secs(300);
+        let reported_remaining = timer.frozen_remaining.unwrap_or_else(|| {
+            calculate_timer_countdown(&timer, later, false).0
+        });
+
+        assert_eq!(frozen_remaining, 44 * 60);
+        assert_eq!(reported_remaining, frozen_remaining);
+    }
+
+    #[test]
+    fn idle_reset_freezes_full_interval() {
+        let now = Instant::now();
+        let mut timer = interval_timer(45, now);
+
+        freeze_timer_countdown(&mut timer, now);
+
+        assert_eq!(timer.frozen_remaining, Some(45 * 60));
+        assert_eq!(timer.frozen_total, Some(45 * 60));
     }
 }
 
@@ -325,64 +455,66 @@ static SYSTEM_LOCKED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "windows")]
 fn start_session_monitor(app_handle: tauri::AppHandle) {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::Foundation::HWND;
     use windows::Win32::System::RemoteDesktop::{
         WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DispatchMessageW, GetMessageW, RegisterClassW,
-        TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, WINDOW_EX_STYLE, WNDCLASSW, WS_OVERLAPPED,
-        WM_WTSSESSION_CHANGE,
+        CreateWindowExW, DispatchMessageW, GetMessageW, RegisterClassW, TranslateMessage,
+        CS_HREDRAW, CS_VREDRAW, MSG, WINDOW_EX_STYLE, WM_WTSSESSION_CHANGE, WNDCLASSW,
+        WS_OVERLAPPED,
     };
-    use windows::Win32::Foundation::HWND;
-    use windows::core::{PCWSTR, w};
 
     const WTS_SESSION_LOCK: u32 = 0x7;
     const WTS_SESSION_UNLOCK: u32 = 0x8;
 
-    std::thread::spawn(move || {
-        unsafe {
-            let class_name = w!("DeskReminderSessionMonitor");
+    std::thread::spawn(move || unsafe {
+        let class_name = w!("DeskReminderSessionMonitor");
 
-            let wc = WNDCLASSW {
-                style: CS_HREDRAW | CS_VREDRAW,
-                lpfnWndProc: Some(session_wnd_proc),
-                hInstance: std::mem::zeroed(),
-                lpszClassName: class_name,
-                ..std::mem::zeroed()
-            };
+        let wc = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(session_wnd_proc),
+            hInstance: std::mem::zeroed(),
+            lpszClassName: class_name,
+            ..std::mem::zeroed()
+        };
 
-            RegisterClassW(&wc);
+        RegisterClassW(&wc);
 
-            let hwnd = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                class_name,
-                PCWSTR::null(),
-                WS_OVERLAPPED,
-                0, 0, 0, 0,
-                HWND::default(),
-                None,
-                None,
-                None,
-            ).unwrap_or(HWND::default());
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            class_name,
+            PCWSTR::null(),
+            WS_OVERLAPPED,
+            0,
+            0,
+            0,
+            0,
+            HWND::default(),
+            None,
+            None,
+            None,
+        )
+        .unwrap_or(HWND::default());
 
-            if hwnd.0 != std::ptr::null_mut() {
-                let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
+        if hwnd.0 != std::ptr::null_mut() {
+            let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
 
-                let mut msg = MSG::default();
-                while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
-                    if msg.message == WM_WTSSESSION_CHANGE {
-                        let wparam = msg.wParam.0 as u32;
-                        if wparam == WTS_SESSION_LOCK {
-                            SYSTEM_LOCKED.store(true, Ordering::SeqCst);
-                            let _ = app_handle.emit("system-locked", ());
-                        } else if wparam == WTS_SESSION_UNLOCK {
-                            SYSTEM_LOCKED.store(false, Ordering::SeqCst);
-                            let _ = app_handle.emit("system-unlocked", ());
-                        }
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
+                if msg.message == WM_WTSSESSION_CHANGE {
+                    let wparam = msg.wParam.0 as u32;
+                    if wparam == WTS_SESSION_LOCK {
+                        SYSTEM_LOCKED.store(true, Ordering::SeqCst);
+                        let _ = app_handle.emit("system-locked", ());
+                    } else if wparam == WTS_SESSION_UNLOCK {
+                        SYSTEM_LOCKED.store(false, Ordering::SeqCst);
+                        let _ = app_handle.emit("system-unlocked", ());
                     }
-                    let _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
                 }
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
             }
         }
     });
@@ -420,13 +552,13 @@ struct LockTaskArgs {
 #[derive(Clone, serde::Serialize)]
 struct CountdownInfo {
     id: String,
-    remaining: u64,  // 剩余秒数
-    total: u64,      // 总秒数
+    remaining: u64, // 剩余秒数
+    total: u64,     // 总秒数
     enabled: bool,
     task_paused: bool,
-    snoozed: bool,   // 是否推迟中
+    snoozed: bool,         // 是否推迟中
     snooze_remaining: u64, // 推迟剩余时间
-    snooze_count: u32, // 当前已推迟次数
+    snooze_count: u32,     // 当前已推迟次数
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -447,11 +579,43 @@ fn rebuild_tray_menu(app: &AppHandle) {
     // 获取当前语言
     let lang = app.state::<LanguageState>().0.lock().unwrap().clone();
 
-    let quit = MenuItem::with_id(app, "quit", get_tray_text("quit", &lang), true, None::<&str>).unwrap();
-    let show = MenuItem::with_id(app, "show", get_tray_text("show", &lang), true, None::<&str>).unwrap();
-    let reset_all = MenuItem::with_id(app, "reset", get_tray_text("reset", &lang), true, None::<&str>).unwrap();
-    let floating = MenuItem::with_id(app, "floating", get_tray_text("floating", &lang), true, None::<&str>).unwrap();
-    let pause_text = if is_paused { get_tray_text("resume", &lang) } else { get_tray_text("pause", &lang) };
+    let quit = MenuItem::with_id(
+        app,
+        "quit",
+        get_tray_text("quit", &lang),
+        true,
+        None::<&str>,
+    )
+    .unwrap();
+    let show = MenuItem::with_id(
+        app,
+        "show",
+        get_tray_text("show", &lang),
+        true,
+        None::<&str>,
+    )
+    .unwrap();
+    let reset_all = MenuItem::with_id(
+        app,
+        "reset",
+        get_tray_text("reset", &lang),
+        true,
+        None::<&str>,
+    )
+    .unwrap();
+    let floating = MenuItem::with_id(
+        app,
+        "floating",
+        get_tray_text("floating", &lang),
+        true,
+        None::<&str>,
+    )
+    .unwrap();
+    let pause_text = if is_paused {
+        get_tray_text("resume", &lang)
+    } else {
+        get_tray_text("pause", &lang)
+    };
     let pause = MenuItem::with_id(app, "pause", pause_text, true, None::<&str>).unwrap();
 
     let reset_prefix = get_tray_text("reset_prefix", &lang);
@@ -464,24 +628,30 @@ fn rebuild_tray_menu(app: &AppHandle) {
         reset_items.push(item);
     }
 
-    let reset_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = reset_items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
-    let reset_submenu = Submenu::with_items(app, get_tray_text("reset_submenu", &lang), true, &reset_refs).unwrap();
+    let reset_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = reset_items
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<tauri::Wry>)
+        .collect();
+    let reset_submenu = Submenu::with_items(
+        app,
+        get_tray_text("reset_submenu", &lang),
+        true,
+        &reset_refs,
+    )
+    .unwrap();
 
-    let menu = Menu::with_items(app, &[
-        &show, 
-        &floating,
-        &pause, 
-        &reset_all, 
-        &reset_submenu, 
-        &quit
-    ]).unwrap();
+    let menu = Menu::with_items(
+        app,
+        &[&show, &floating, &pause, &reset_all, &reset_submenu, &quit],
+    )
+    .unwrap();
 
     let tray_state = app.state::<TrayState>();
     let guard = tray_state.0.lock().unwrap();
     if let Some(tray) = guard.as_ref() {
         let _ = tray.set_menu(Some(menu));
     }
-    
+
     let pause_state = app.state::<PauseMenuState>();
     *pause_state.0.lock().unwrap() = Some(pause);
 }
@@ -491,6 +661,8 @@ fn sync_tasks(app: tauri::AppHandle, tasks: Vec<TaskConfig>) {
     {
         let mut state = get_timer_state().lock().unwrap();
         let now = Instant::now();
+        let should_freeze_new_state =
+            state.paused || state.system_locked || state.lock_screen_active || state.is_idle;
 
         // 保留现有任务的计时状态，只更新配置
         let mut new_tasks: HashMap<String, TaskTimer> = HashMap::new();
@@ -508,7 +680,8 @@ fn sync_tasks(app: tauri::AppHandle, tasks: Vec<TaskConfig>) {
 
                 if interval_changed {
                     // interval 变了，重置计时
-                    new_tasks.insert(task.id.clone(), TaskTimer {
+                    let task_id = task.id.clone();
+                    let mut new_timer = TaskTimer {
                         config: task,
                         reset_time: now,
                         triggered: false,
@@ -516,7 +689,13 @@ fn sync_tasks(app: tauri::AppHandle, tasks: Vec<TaskConfig>) {
                         snoozed: false,
                         snooze_count: 0,
                         daily_last_trigger_key: None,
-                    });
+                        frozen_remaining: None,
+                        frozen_total: None,
+                    };
+                    if should_freeze_new_state {
+                        freeze_timer_countdown(&mut new_timer, now);
+                    }
+                    new_tasks.insert(task_id, new_timer);
                 } else if was_disabled && is_now_enabled {
                     // 从禁用变为启用，补偿禁用期间的时间
                     let mut new_reset_time = existing.reset_time;
@@ -524,7 +703,8 @@ fn sync_tasks(app: tauri::AppHandle, tasks: Vec<TaskConfig>) {
                         let disabled_duration = now.duration_since(disabled_at);
                         new_reset_time += disabled_duration;
                     }
-                    new_tasks.insert(task.id.clone(), TaskTimer {
+                    let task_id = task.id.clone();
+                    let mut new_timer = TaskTimer {
                         config: task,
                         reset_time: new_reset_time,
                         triggered: existing.triggered,
@@ -532,10 +712,17 @@ fn sync_tasks(app: tauri::AppHandle, tasks: Vec<TaskConfig>) {
                         snoozed: existing.snoozed,
                         snooze_count: existing.snooze_count,
                         daily_last_trigger_key: existing.daily_last_trigger_key.clone(),
-                    });
+                        frozen_remaining: None,
+                        frozen_total: None,
+                    };
+                    if should_freeze_new_state {
+                        freeze_timer_countdown(&mut new_timer, now);
+                    }
+                    new_tasks.insert(task_id, new_timer);
                 } else if was_enabled && is_now_disabled {
                     // 从启用变为禁用，记录禁用时间点
-                    new_tasks.insert(task.id.clone(), TaskTimer {
+                    let task_id = task.id.clone();
+                    let mut new_timer = TaskTimer {
                         config: task,
                         reset_time: existing.reset_time,
                         triggered: existing.triggered,
@@ -543,22 +730,32 @@ fn sync_tasks(app: tauri::AppHandle, tasks: Vec<TaskConfig>) {
                         snoozed: existing.snoozed,
                         snooze_count: existing.snooze_count,
                         daily_last_trigger_key: existing.daily_last_trigger_key.clone(),
-                    });
+                        frozen_remaining: existing.frozen_remaining,
+                        frozen_total: existing.frozen_total,
+                    };
+                    freeze_timer_countdown(&mut new_timer, now);
+                    new_tasks.insert(task_id, new_timer);
                 } else {
                     // 状态没变，保留
-                    new_tasks.insert(task.id.clone(), TaskTimer {
-                        config: task,
-                        reset_time: existing.reset_time,
-                        triggered: existing.triggered,
-                        disabled_at: existing.disabled_at,
-                        snoozed: existing.snoozed,
-                        snooze_count: existing.snooze_count,
-                        daily_last_trigger_key: existing.daily_last_trigger_key.clone(),
-                    });
+                    new_tasks.insert(
+                        task.id.clone(),
+                        TaskTimer {
+                            config: task,
+                            reset_time: existing.reset_time,
+                            triggered: existing.triggered,
+                            disabled_at: existing.disabled_at,
+                            snoozed: existing.snoozed,
+                            snooze_count: existing.snooze_count,
+                            daily_last_trigger_key: existing.daily_last_trigger_key.clone(),
+                            frozen_remaining: existing.frozen_remaining,
+                            frozen_total: existing.frozen_total,
+                        },
+                    );
                 }
             } else {
                 // 新任务
-                new_tasks.insert(task.id.clone(), TaskTimer {
+                let task_id = task.id.clone();
+                let mut new_timer = TaskTimer {
                     config: task.clone(),
                     reset_time: now,
                     triggered: false,
@@ -566,7 +763,13 @@ fn sync_tasks(app: tauri::AppHandle, tasks: Vec<TaskConfig>) {
                     snoozed: false,
                     snooze_count: 0,
                     daily_last_trigger_key: None,
-                });
+                    frozen_remaining: None,
+                    frozen_total: None,
+                };
+                if should_freeze_new_state {
+                    freeze_timer_countdown(&mut new_timer, now);
+                }
+                new_tasks.insert(task_id, new_timer);
             }
         }
 
@@ -581,7 +784,7 @@ fn timer_pause() {
     let mut state = get_timer_state().lock().unwrap();
     if !state.paused {
         let now = Instant::now();
-        freeze_active_daily_timers(&mut state, now);
+        freeze_active_timers(&mut state, now);
         state.paused = true;
         state.pause_start = Some(now);
     }
@@ -593,12 +796,17 @@ fn timer_resume() {
     if state.paused {
         if let Some(pause_start) = state.pause_start {
             let pause_duration = pause_start.elapsed();
+            let keep_frozen = state.system_locked || state.lock_screen_active || state.is_idle;
             // 补偿暂停时间
             for timer in state.tasks.values_mut() {
                 timer.reset_time += pause_duration;
                 // 如果任务被禁用，也需要同步更新 disabled_at，保持相对时间不变
                 if let Some(ref mut disabled_at) = timer.disabled_at {
                     *disabled_at += pause_duration;
+                } else if keep_frozen {
+                    freeze_timer_countdown(timer, Instant::now());
+                } else {
+                    clear_timer_freeze(timer);
                 }
             }
         }
@@ -618,7 +826,7 @@ fn timer_pause_task(task_id: String) {
     let now = Instant::now();
     if let Some(timer) = state.tasks.get_mut(&task_id) {
         if timer.config.enabled && timer.disabled_at.is_none() {
-            freeze_daily_timer(timer, now);
+            freeze_timer_countdown(timer, now);
             timer.disabled_at = Some(now);
         }
     }
@@ -628,12 +836,19 @@ fn timer_pause_task(task_id: String) {
 fn timer_resume_task(task_id: String) {
     let mut state = get_timer_state().lock().unwrap();
     let now = Instant::now();
+    let keep_frozen =
+        state.paused || state.system_locked || state.lock_screen_active || state.is_idle;
     if let Some(timer) = state.tasks.get_mut(&task_id) {
         if timer.config.enabled {
             if let Some(disabled_at) = timer.disabled_at {
                 let disabled_duration = now.duration_since(disabled_at);
                 timer.reset_time += disabled_duration;
                 timer.disabled_at = None;
+                if keep_frozen {
+                    freeze_timer_countdown(timer, now);
+                } else {
+                    clear_timer_freeze(timer);
+                }
             }
         }
     }
@@ -643,6 +858,8 @@ fn timer_resume_task(task_id: String) {
 fn timer_reset_task(task_id: String) {
     let mut state = get_timer_state().lock().unwrap();
     let now = Instant::now();
+    let should_freeze =
+        state.paused || state.system_locked || state.lock_screen_active || state.is_idle;
     if let Some(timer) = state.tasks.get_mut(&task_id) {
         timer.reset_time = now;
         timer.triggered = false;
@@ -651,6 +868,11 @@ fn timer_reset_task(task_id: String) {
         // 如果任务禁用，也更新 disabled_at
         if timer.disabled_at.is_some() {
             timer.disabled_at = Some(now);
+            freeze_timer_countdown(timer, now);
+        } else if should_freeze {
+            freeze_timer_countdown(timer, now);
+        } else {
+            clear_timer_freeze(timer);
         }
     }
 }
@@ -659,6 +881,8 @@ fn timer_reset_task(task_id: String) {
 fn timer_reset_all() {
     let mut state = get_timer_state().lock().unwrap();
     let now = Instant::now();
+    let should_freeze =
+        state.paused || state.system_locked || state.lock_screen_active || state.is_idle;
     for timer in state.tasks.values_mut() {
         timer.reset_time = now;
         timer.triggered = false;
@@ -667,6 +891,11 @@ fn timer_reset_all() {
         // 如果任务禁用，也更新 disabled_at
         if timer.disabled_at.is_some() {
             timer.disabled_at = Some(now);
+            freeze_timer_countdown(timer, now);
+        } else if should_freeze {
+            freeze_timer_countdown(timer, now);
+        } else {
+            clear_timer_freeze(timer);
         }
     }
 }
@@ -675,6 +904,8 @@ fn timer_reset_all() {
 fn timer_snooze_task(task_id: String, minutes: u64) {
     let mut state = get_timer_state().lock().unwrap();
     let now = Instant::now();
+    let should_freeze =
+        state.paused || state.system_locked || state.lock_screen_active || state.is_idle;
     if let Some(timer) = state.tasks.get_mut(&task_id) {
         let snooze_duration = Duration::from_secs(minutes * 60);
         timer.reset_time = now + snooze_duration;
@@ -682,6 +913,11 @@ fn timer_snooze_task(task_id: String, minutes: u64) {
         timer.triggered = false;
         timer.snoozed = true;
         timer.snooze_count += 1;
+        if should_freeze {
+            freeze_timer_countdown(timer, now);
+        } else {
+            clear_timer_freeze(timer);
+        }
     }
 }
 
@@ -693,64 +929,58 @@ fn get_countdowns() -> Vec<CountdownInfo> {
         state.pause_start.unwrap_or(now)
     } else if state.lock_screen_active {
         state.lock_screen_start.unwrap_or(now)
+    } else if state.is_idle {
+        state.idle_start.unwrap_or(now)
     } else {
         now
     };
+    let globally_frozen =
+        state.paused || state.system_locked || state.lock_screen_active || state.is_idle;
 
-    state.tasks.values().map(|timer| {
-        let is_daily = is_daily_task(&timer.config);
-        let mut total_secs = if is_daily { 24 * 60 * 60 } else { timer.config.interval * 60 };
-
-        // 如果任务被禁用，使用禁用时间点计算 elapsed，这样时间就"冻结"了
-        let effective_now = if let Some(disabled_at) = timer.disabled_at {
-            disabled_at
-        } else {
-            frozen_now
-        };
-
-        let remaining = if timer.snoozed {
-            total_secs = timer.reset_time
-                .checked_duration_since(effective_now)
-                .map(|duration| duration.as_secs().max(1))
-                .unwrap_or(1);
-            timer.reset_time
-                .checked_duration_since(effective_now)
-                .map(|duration| duration.as_secs())
-                .unwrap_or(0)
-        } else if is_daily {
-            if timer.disabled_at.is_some() || state.paused || state.system_locked || state.lock_screen_active {
-                timer.reset_time
-                    .checked_duration_since(effective_now)
-                    .map(|duration| duration.as_secs())
-                    .unwrap_or(0)
+    state
+        .tasks
+        .values()
+        .map(|timer| {
+            // 如果任务被禁用，使用禁用时间点计算 elapsed，这样时间就"冻结"了
+            let effective_now = if let Some(disabled_at) = timer.disabled_at {
+                disabled_at
             } else {
-                daily_remaining_seconds(&timer.config)
-            }
-        } else if timer.reset_time > effective_now {
-            let wait_time = timer.reset_time.duration_since(effective_now).as_secs();
-            total_secs + wait_time
-        } else {
-            let elapsed = effective_now.saturating_duration_since(timer.reset_time).as_secs();
-            if elapsed >= total_secs { 0 } else { total_secs - elapsed }
-        };
-        
-        let snooze_remaining = if timer.reset_time > effective_now {
-            timer.reset_time.duration_since(effective_now).as_secs()
-        } else {
-            0
-        };
+                frozen_now
+            };
 
-        CountdownInfo {
-            id: timer.config.id.clone(),
-            remaining,
-            total: total_secs,
-            enabled: timer.config.enabled,
-            task_paused: timer.config.enabled && timer.disabled_at.is_some(),
-            snoozed: timer.snoozed,
-            snooze_remaining,
-            snooze_count: timer.snooze_count,
-        }
-    }).collect()
+            let timer_frozen = globally_frozen || timer.disabled_at.is_some();
+            let (remaining, total_secs, snooze_remaining) = if timer_frozen {
+                if let (Some(remaining), Some(total)) = (timer.frozen_remaining, timer.frozen_total)
+                {
+                    let snooze_remaining = if timer.snoozed {
+                        remaining
+                    } else {
+                        timer
+                            .reset_time
+                            .checked_duration_since(effective_now)
+                            .map(|duration| duration.as_secs())
+                            .unwrap_or(0)
+                    };
+                    (remaining, total, snooze_remaining)
+                } else {
+                    calculate_timer_countdown(timer, effective_now, false)
+                }
+            } else {
+                calculate_timer_countdown(timer, effective_now, true)
+            };
+
+            CountdownInfo {
+                id: timer.config.id.clone(),
+                remaining,
+                total: total_secs,
+                enabled: timer.config.enabled,
+                task_paused: timer.config.enabled && timer.disabled_at.is_some(),
+                snoozed: timer.snoozed,
+                snooze_remaining,
+                snooze_count: timer.snooze_count,
+            }
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -766,7 +996,7 @@ fn timer_set_system_locked(locked: bool) {
 
     if locked && !state.system_locked {
         // 刚锁屏，记录暂停时间
-        freeze_active_daily_timers(&mut state, now);
+        freeze_active_timers(&mut state, now);
         state.system_locked = true;
         if state.pause_start.is_none() {
             state.pause_start = Some(now);
@@ -774,6 +1004,7 @@ fn timer_set_system_locked(locked: bool) {
     } else if !locked && state.system_locked {
         // 解锁
         let pause_duration = state.pause_start.map(|s| s.elapsed());
+        let keep_frozen = state.paused || state.lock_screen_active || state.is_idle;
 
         for timer in state.tasks.values_mut() {
             if timer.config.auto_reset_on_idle {
@@ -783,6 +1014,11 @@ fn timer_set_system_locked(locked: bool) {
                 // 如果任务被禁用，也更新 disabled_at
                 if timer.disabled_at.is_some() {
                     timer.disabled_at = Some(now);
+                    freeze_timer_countdown(timer, now);
+                } else if keep_frozen {
+                    freeze_timer_countdown(timer, now);
+                } else {
+                    clear_timer_freeze(timer);
                 }
             } else if let Some(duration) = pause_duration {
                 // 没有勾选，补偿暂停时间
@@ -790,6 +1026,10 @@ fn timer_set_system_locked(locked: bool) {
                 // 如果任务被禁用，也需要同步更新 disabled_at，保持相对时间不变
                 if let Some(ref mut disabled_at) = timer.disabled_at {
                     *disabled_at += duration;
+                } else if keep_frozen {
+                    freeze_timer_countdown(timer, now);
+                } else {
+                    clear_timer_freeze(timer);
                 }
             }
         }
@@ -807,11 +1047,12 @@ fn timer_set_lock_screen_active(active: bool) {
     if active && !state.lock_screen_active {
         // 刚进入锁屏模式，记录开始时间
         let now = Instant::now();
-        freeze_active_daily_timers(&mut state, now);
+        freeze_active_timers(&mut state, now);
         state.lock_screen_active = true;
         state.lock_screen_start = Some(now);
     } else if !active && state.lock_screen_active {
         // 退出锁屏模式，补偿锁屏期间的时间
+        let keep_frozen = state.paused || state.system_locked || state.is_idle;
         if let Some(lock_start) = state.lock_screen_start {
             let lock_duration = lock_start.elapsed();
             for timer in state.tasks.values_mut() {
@@ -822,6 +1063,10 @@ fn timer_set_lock_screen_active(active: bool) {
                 // 如果任务被禁用，也需要同步更新 disabled_at，保持相对时间不变
                 if let Some(ref mut disabled_at) = timer.disabled_at {
                     *disabled_at += lock_duration;
+                } else if keep_frozen {
+                    freeze_timer_countdown(timer, Instant::now());
+                } else {
+                    clear_timer_freeze(timer);
                 }
             }
         }
@@ -847,7 +1092,7 @@ struct IdleStatus {
     is_idle: bool,
     idle_seconds: u64,
     threshold: u64,
-    idle_start_timestamp: Option<i64>,  // 空闲开始时间戳
+    idle_start_timestamp: Option<i64>, // 空闲开始时间戳
 }
 
 fn start_timer_thread(app_handle: AppHandle) {
@@ -881,9 +1126,13 @@ fn start_timer_thread(app_handle: AppHandle) {
             if is_locked {
                 // 主窗口
                 if let Some(window) = app_handle.get_webview_window("main") {
-                    if !window.is_visible().unwrap_or(false) { let _ = window.show(); }
+                    if !window.is_visible().unwrap_or(false) {
+                        let _ = window.show();
+                    }
                     let _ = window.unminimize();
-                    if !window.is_focused().unwrap_or(false) { let _ = window.set_focus(); }
+                    if !window.is_focused().unwrap_or(false) {
+                        let _ = window.set_focus();
+                    }
                     let _ = window.set_always_on_top(true);
 
                     // Linux-specific: Additional focus enforcement for both X11 and Wayland
@@ -902,8 +1151,12 @@ fn start_timer_thread(app_handle: AppHandle) {
 
                 for label in &windows {
                     if let Some(window) = app_handle.get_webview_window(label) {
-                        if !window.is_visible().unwrap_or(false) { let _ = window.show(); }
-                        if !window.is_focused().unwrap_or(false) { let _ = window.set_focus(); }
+                        if !window.is_visible().unwrap_or(false) {
+                            let _ = window.show();
+                        }
+                        if !window.is_focused().unwrap_or(false) {
+                            let _ = window.set_focus();
+                        }
                         let _ = window.set_always_on_top(true);
 
                         // Linux-specific: Additional focus and fullscreen enforcement
@@ -953,7 +1206,9 @@ fn start_timer_thread(app_handle: AppHandle) {
                                     let _ = win.set_size(tauri::Size::Physical(m.size().clone()));
                                     let _ = win.set_fullscreen(true);
                                 } else {
-                                    if let Some(new_label) = create_slave_window(&app_handle, m, args.as_ref(), i) {
+                                    if let Some(new_label) =
+                                        create_slave_window(&app_handle, m, args.as_ref(), i)
+                                    {
                                         guard.windows.push(new_label);
                                     }
                                 }
@@ -1005,9 +1260,12 @@ fn start_timer_thread(app_handle: AppHandle) {
 
                     // 重置所有勾选了「空闲重置」的任务
                     for timer in state.tasks.values_mut() {
-                        if timer.config.auto_reset_on_idle && timer.config.enabled {
-                            timer.reset_time = now;
-                            timer.triggered = false;
+                        if timer.config.enabled {
+                            if timer.config.auto_reset_on_idle {
+                                timer.reset_time = now;
+                                timer.triggered = false;
+                            }
+                            freeze_timer_countdown(timer, now);
                         }
                     }
                 } else if !is_now_idle && was_idle {
@@ -1019,6 +1277,13 @@ fn start_timer_thread(app_handle: AppHandle) {
                         if timer.config.auto_reset_on_idle && timer.config.enabled {
                             timer.reset_time = now;
                             timer.triggered = false;
+                            if timer.disabled_at.is_some() {
+                                timer.disabled_at = Some(now);
+                                freeze_timer_countdown(timer, now);
+                            }
+                        }
+                        if timer.disabled_at.is_none() {
+                            clear_timer_freeze(timer);
                         }
                     }
 
@@ -1097,7 +1362,9 @@ fn start_timer_thread(app_handle: AppHandle) {
 
             if !tasks_to_trigger.is_empty() {
                 let mut state = get_timer_state().lock().unwrap();
-                state.pending_triggers.extend(tasks_to_trigger.iter().cloned());
+                state
+                    .pending_triggers
+                    .extend(tasks_to_trigger.iter().cloned());
             }
 
             // 发送触发事件到前端
@@ -1152,14 +1419,13 @@ fn was_started_silent() -> bool {
 }
 
 fn play_custom_audio_file(file_path: &str) -> Result<(), String> {
-    use std::fs::File;
     use rodio::{Decoder, OutputStreamBuilder, Sink};
+    use std::fs::File;
 
     let stream_handle = OutputStreamBuilder::open_default_stream()
         .map_err(|e| format!("Failed to create audio output stream: {}", e))?;
     let sink = Sink::connect_new(stream_handle.mixer());
-    let file = File::open(file_path)
-        .map_err(|e| format!("Failed to open audio file: {}", e))?;
+    let file = File::open(file_path).map_err(|e| format!("Failed to open audio file: {}", e))?;
     let source = Decoder::try_from(BufReader::new(file))
         .map_err(|e| format!("Failed to decode audio file: {}", e))?;
 
@@ -1177,15 +1443,17 @@ fn play_custom_audio_async(file_path: String) {
 fn play_system_notification_sound() {
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
         use std::os::windows::process::CommandExt;
+        use std::process::Command;
         let _ = Command::new("powershell")
             .args([
                 "-NoProfile",
-                "-WindowStyle", "Hidden",
-                "-ExecutionPolicy", "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-ExecutionPolicy",
+                "Bypass",
                 "-Command",
-                "Add-Type -AssemblyName System.Sound; [System.Media.SystemSounds]::Beep.Play();"
+                "Add-Type -AssemblyName System.Sound; [System.Media.SystemSounds]::Beep.Play();",
             ])
             .creation_flags(0x08000000)
             .output();
@@ -1205,13 +1473,17 @@ fn play_system_notification_sound() {
         // 尝试多种 Linux 系统声音命令
         if Command::new("paplay")
             .args(["/usr/share/sounds/alsa/Front_Left.wav"])
-            .output().is_ok() {
+            .output()
+            .is_ok()
+        {
             return;
         }
 
         if Command::new("aplay")
             .args(["/usr/share/sounds/alsa/Front_Left.wav"])
-            .output().is_ok() {
+            .output()
+            .is_ok()
+        {
             return;
         }
 
@@ -1278,7 +1550,10 @@ fn is_main_window_visible(window: tauri::Window) -> bool {
     window.is_visible().unwrap_or(false)
 }
 
-fn ensure_floating_window(app: &AppHandle, visible_on_create: bool) -> Result<WebviewWindow, String> {
+fn ensure_floating_window(
+    app: &AppHandle,
+    visible_on_create: bool,
+) -> Result<WebviewWindow, String> {
     if let Some(window) = app.get_webview_window("floating-window") {
         return Ok(window);
     }
@@ -1371,7 +1646,9 @@ fn set_floating_task_menu_open(app: AppHandle, open: bool) -> Result<(), String>
 #[tauri::command]
 fn set_floating_window_always_on_top(app: AppHandle, always_on_top: bool) -> Result<(), String> {
     let window = ensure_floating_window(&app, false)?;
-    window.set_always_on_top(always_on_top).map_err(|e| e.to_string())
+    window
+        .set_always_on_top(always_on_top)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1410,12 +1687,17 @@ fn update_tray_language(app: AppHandle, lang_state: State<LanguageState>, langua
     }
 }
 
-fn create_slave_window(app: &AppHandle, monitor: &tauri::Monitor, task: Option<&LockTaskArgs>, index: usize) -> Option<String> {
+fn create_slave_window(
+    app: &AppHandle,
+    monitor: &tauri::Monitor,
+    task: Option<&LockTaskArgs>,
+    index: usize,
+) -> Option<String> {
     let label = format!("lock-slave-{}", index);
-    
+
     let mut url_str = String::from("index.html?mode=lock_slave");
     if let Some(t) = task {
-         let encoded: String = form_urlencoded::Serializer::new(String::new())
+        let encoded: String = form_urlencoded::Serializer::new(String::new())
             .append_pair("title", &t.title)
             .append_pair("desc", &t.desc)
             .append_pair("duration", &t.duration.to_string())
@@ -1427,27 +1709,28 @@ fn create_slave_window(app: &AppHandle, monitor: &tauri::Monitor, task: Option<&
             .append_pair("current_snooze_count", &t.current_snooze_count.to_string())
             .append_pair("bg_image", &t.bg_image)
             .finish();
-         url_str = format!("index.html?mode=lock_slave&{}", encoded);
+        url_str = format!("index.html?mode=lock_slave&{}", encoded);
     }
 
-    if let Ok(slave) = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(PathBuf::from(url_str)))
-        .title("Lock Screen")
-        .always_on_top(true)
-        .closable(false)
-        .minimizable(false)
-        .decorations(false)
-        .resizable(false)
-        .skip_taskbar(true)
-        .visible(false)
-        .focused(true)
-        .build() {
-            
+    if let Ok(slave) =
+        WebviewWindowBuilder::new(app, &label, WebviewUrl::App(PathBuf::from(url_str)))
+            .title("Lock Screen")
+            .always_on_top(true)
+            .closable(false)
+            .minimizable(false)
+            .decorations(false)
+            .resizable(false)
+            .skip_taskbar(true)
+            .visible(false)
+            .focused(true)
+            .build()
+    {
         let _ = slave.set_position(monitor.position().clone());
         let _ = slave.set_size(tauri::Size::Physical(monitor.size().clone()));
         let _ = slave.show();
         let _ = slave.set_focus();
         let _ = slave.set_fullscreen(true);
-        
+
         // Additional focus and z-order enforcement for Linux
         #[cfg(target_os = "linux")]
         {
@@ -1456,7 +1739,7 @@ fn create_slave_window(app: &AppHandle, monitor: &tauri::Monitor, task: Option<&
             // On Linux, we may need to ensure the window is always on top multiple times
             let _ = slave.set_always_on_top(true);
         }
-        
+
         Some(label)
     } else {
         None
@@ -1464,7 +1747,11 @@ fn create_slave_window(app: &AppHandle, monitor: &tauri::Monitor, task: Option<&
 }
 
 #[tauri::command]
-async fn enter_lock_mode(app: tauri::AppHandle, state: State<'_, LockState>, task: Option<LockTaskArgs>) -> Result<(), String> {
+async fn enter_lock_mode(
+    app: tauri::AppHandle,
+    state: State<'_, LockState>,
+    task: Option<LockTaskArgs>,
+) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
@@ -1483,22 +1770,22 @@ async fn enter_lock_mode(app: tauri::AppHandle, state: State<'_, LockState>, tas
 
     let monitors = window.available_monitors().unwrap_or_default();
     let current_monitor = window.current_monitor().unwrap_or(None);
-    
+
     let mut created_windows = Vec::new();
-    
+
     for (i, m) in monitors.iter().enumerate() {
         if let Some(ref cm) = current_monitor {
-             // Basic position check to assume it's the same monitor
-             if m.position().x == cm.position().x && m.position().y == cm.position().y {
-                 continue;
-             }
+            // Basic position check to assume it's the same monitor
+            if m.position().x == cm.position().x && m.position().y == cm.position().y {
+                continue;
+            }
         }
 
         if let Some(label) = create_slave_window(&app, m, task.as_ref(), i) {
             created_windows.push(label);
         }
     }
-    
+
     // Additional focus enforcement for Linux after all windows are created
     #[cfg(target_os = "linux")]
     {
@@ -1513,7 +1800,7 @@ async fn enter_lock_mode(app: tauri::AppHandle, state: State<'_, LockState>, tas
         let _ = window.set_focus();
         let _ = window.set_always_on_top(true);
     }
-    
+
     let mut state_guard = state.0.lock().unwrap();
     state_guard.windows.extend(created_windows);
     state_guard.args = task;
@@ -1561,7 +1848,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            Some(vec!["--silent"])
+            Some(vec!["--silent"]),
         ))
         .invoke_handler(tauri::generate_handler![
             load_settings,
@@ -1600,17 +1887,21 @@ pub fn run() {
         ])
         .manage(TrayState(Mutex::new(None)))
         .manage(FloatingState(Mutex::new(false)))
-        .manage(LockState(Mutex::new(LockStateInner { windows: Vec::new(), args: None })))
+        .manage(LockState(Mutex::new(LockStateInner {
+            windows: Vec::new(),
+            args: None,
+        })))
         .manage(PauseMenuState(Mutex::new(None)))
         .manage(LanguageState(Mutex::new("zh-CN".to_string())))
         .setup(|app| {
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
-            let floating = MenuItem::with_id(app, "floating", "显示/隐藏悬浮窗", true, None::<&str>)?;
+            let floating =
+                MenuItem::with_id(app, "floating", "显示/隐藏悬浮窗", true, None::<&str>)?;
             let reset = MenuItem::with_id(app, "reset", "重置所有任务", true, None::<&str>)?;
             let pause = MenuItem::with_id(app, "pause", "暂停", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &floating, &pause, &reset, &quit])?;
-            
+
             let tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
@@ -1657,7 +1948,8 @@ pub fn run() {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         ..
-                    } = event {
+                    } = event
+                    {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
                             let _ = window.unminimize();
@@ -1667,7 +1959,7 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
-            
+
             *app.state::<TrayState>().0.lock().unwrap() = Some(tray);
             *app.state::<PauseMenuState>().0.lock().unwrap() = Some(pause);
 
@@ -1676,7 +1968,7 @@ pub fn run() {
 
             #[cfg(target_os = "windows")]
             start_session_monitor(app.handle().clone());
-            
+
             Ok(())
         })
         .on_window_event(|window, event| {

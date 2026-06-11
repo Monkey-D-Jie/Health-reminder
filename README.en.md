@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://tauri.app/"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=flat-square" alt="Platform"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License"></a>
-  <a href="https://github.com/kaima2022/Health-reminder/releases"><img src="https://img.shields.io/badge/Version-1.7.2-orange?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/kaima2022/Health-reminder/releases"><img src="https://img.shields.io/badge/Version-1.7.3-orange?style=flat-square" alt="Version"></a>
 </p>
 
 <p align="center">
@@ -183,6 +183,10 @@ npm run tauri build
 
 > #### Scoop update command
 > scoop update health-reminder
+
+### v1.7.3 (2026-06-11)
+- **Paused countdown freeze fix**: Unified backend freeze handling for global pause, per-task pause, system lock, app lock screen, and idle state, fixing interval tasks whose floating-window remaining time could still grow unexpectedly while paused.
+- **Floating window state sync**: Pause, resume, and reset now refresh countdowns from the backend immediately, avoiding stale values or a one-second delay before the display stabilizes.
 
 ### v1.7.2 (2026-06-10)
 - **Version display fix**: The settings page and footer now read the current version from Tauri app metadata instead of hard-coded text, keeping the in-app version aligned with releases.
